@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:web_socket_channel/io.dart'; // Import IOWebSocketChannel
+import 'package:web_socket_channel/web_socket_channel.dart'; // Updated import for WebSocketChannel
 import 'dart:convert';
+import 'package:flutter/foundation.dart'; // Import for kIsWeb
 
 void main() {
   runApp(MyApp());
@@ -25,7 +26,7 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _controller = TextEditingController();
   final List<Map<String, String>> _messages = [];
-  late IOWebSocketChannel _channel;
+  late WebSocketChannel _channel;
 
   @override
   void initState() {
@@ -34,16 +35,13 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _connectToWebSocket() {
-    // Define the API key
-    const apiKey = 'loser_use_typescript12345'; // Replace with your API key
-
-    // Create a WebSocket connection with custom headers
+    // WebSocket connection URL
     final wsUrl = Uri.parse('ws://localhost:3000');
-    final headers = {'authorization': apiKey}; // Add the authorization header
 
-    // Use IOWebSocketChannel to connect with custom headers
-    _channel = IOWebSocketChannel.connect(wsUrl, headers: headers);
+    // Connect using WebSocketChannel
+    _channel = WebSocketChannel.connect(wsUrl);
 
+    // Once connected, send the authorization message
     _channel.stream.listen(
       (message) {
         final data = jsonDecode(message);
@@ -77,6 +75,10 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       },
     );
+
+    // Send the API key as an 'auth' message
+    final apiKey = 'loser_use_typescript12345'; // Replace with your API key
+    _channel.sink.add(jsonEncode({'type': 'auth', 'authorization': apiKey}));
   }
 
   void _sendMessage() {

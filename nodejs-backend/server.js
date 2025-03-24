@@ -4,7 +4,7 @@ const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-const axios = require("axios");
+const { Ollama } = require("ollama");
 
 const app = express();
 const port = 3000;
@@ -33,6 +33,9 @@ if (!fs.existsSync(dir)) {
 // Hardcoded API key
 const API_KEY = "loser_use_typescript12345"; // API key
 
+// Ollama API URL
+const OLLAMA_URL = "http://192.168.1.235:11434"; // Directly set the Ollama URL here
+
 // Function to check API key
 function check_api_key(authorization) {
   if (!authorization) return false;
@@ -53,84 +56,57 @@ const server = app.listen(port, () => {
 // Create WebSocket server
 const wss = new WebSocket.Server({ server });
 
-wss.on("connection", async (ws, req) => {
+wss.on("connection", (ws, req) => {
   console.log("Client connected");
 
   // Log the WebSocket request headers for debugging
   console.log("WebSocket request headers:", req.headers);
 
-  // Extract the authorization header from the WebSocket request
-  const authorization = req.headers["authorization"];
-  console.log("Authorization header:", authorization);
+  let isAuthorized = false;
 
-  // Check if the API key is valid
-  const isAuthorized = check_api_key(authorization);
-  console.log("Is authorized:", isAuthorized);
-
-  if (!isAuthorized) {
-    console.log("Unauthorized access detected");
-    ws.send(JSON.stringify({ type: "error", text: "Unauthorized" }));
-    ws.close();
-    return;
-  }
-
-  // Handle authorized connections
-  ws.on("message", async (message) => {
-    console.log("Received message:", message);
-
+  // Listen for the first message (which should contain the API key)
+  ws.once("message", (message) => {
     const data = JSON.parse(message);
-    console.log("Parsed message data:", data);
 
-    if (data.type === "text") {
-      console.log("Handling text message:", data.text);
+    if (data.type === "auth" && data.authorization === API_KEY) {
+      console.log("Client authorized with API key.");
+      isAuthorized = true;
 
-      try {
-        // Call the Ollama API for text chat
-        const aiResponse = await callOllamaTextChat(data.text);
-        console.log("Sending AI response to client:", aiResponse);
+      // If authorized, set up the message handler for further messages
+      ws.on("message", async (message) => {
+        console.log("Received message:", message);
 
-        // Stream the AI response back to the client
-        ws.send(JSON.stringify({ type: "text", text: aiResponse }));
-      } catch (error) {
-        console.error("Error calling Ollama API:", error);
-        ws.send(
-          JSON.stringify({ type: "error", text: "Failed to get AI response" })
-        );
-      }
-    } else if (data.type === "image") {
-      console.log("Handling image message");
+        const data = JSON.parse(message);
+        console.log("Parsed message data:", data);
 
-      // Handle image upload
-      const imagePath = path.join(dir, `image_${Date.now()}.jpg`);
-      fs.writeFile(imagePath, Buffer.from(data.image, "base64"), (err) => {
-        if (err) {
-          console.error("Failed to save image:", err);
-          ws.send(
-            JSON.stringify({ type: "error", text: "Failed to process image" })
-          );
-        } else {
-          // Call the Ollama API for image analysis
-          callOllamaImageAnalysis(
-            imagePath,
-            data.text || "What is in this image?"
-          )
-            .then((aiResponse) => {
-              console.log("Sending AI response to client:", aiResponse);
-              ws.send(JSON.stringify({ type: "text", text: aiResponse }));
-              fs.unlinkSync(imagePath); // Clean up the uploaded file
-            })
-            .catch((error) => {
-              console.error("Error calling Ollama API:", error);
-              ws.send(
-                JSON.stringify({
-                  type: "error",
-                  text: "Failed to process image",
-                })
-              );
-              fs.unlinkSync(imagePath); // Clean up the uploaded file
-            });
+        if (data.type === "text" || data.type === "image") {
+          console.log("Handling message of type:", data.type);
+
+          try {
+            // Use the model "llama3.2-vision" for both text and image analysis
+            const aiResponse = await callOllamaModel(
+              data.text || "",
+              data.image
+            );
+            console.log("Sending AI response to client:", aiResponse);
+
+            // Stream the AI response back to the client
+            ws.send(JSON.stringify({ type: "text", text: aiResponse }));
+          } catch (error) {
+            console.error("Error calling Ollama API:", error);
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                text: "Failed to get AI response",
+              })
+            );
+          }
         }
       });
+    } else {
+      console.log("Unauthorized access detected");
+      ws.send(JSON.stringify({ type: "error", text: "Unauthorized" }));
+      ws.close();
     }
   });
 
@@ -139,59 +115,51 @@ wss.on("connection", async (ws, req) => {
   });
 });
 
-// Function to call Ollama API for text chat
-async function callOllamaTextChat(userMessage) {
-  console.log("Calling Ollama API for text chat with message:", userMessage);
+// Function to call Ollama API with the "llama3.2-vision" model
+async function callOllamaModel(userMessage = "", imageData = "") {
+  console.log(
+    "Calling Ollama API for model processing with message:",
+    userMessage
+  );
 
-  const ollamaUrl = "http://192.168.1.235:11434"; // Ollama API endpoint
-  const model = "llama2"; // Replace with your preferred model (e.g., llama2, llama3)
-
-  try {
-    const response = await axios.post(ollamaUrl, {
-      model: model,
-      messages: [
-        { role: "system", content: "You are a helpful assistant." },
-        { role: "user", content: userMessage },
-      ],
-    });
-
-    console.log("Ollama API response:", response.data);
-    return response.data.message.content;
-  } catch (error) {
-    console.error(
-      "Error calling Ollama API:",
-      error.response?.data || error.message
-    );
-    throw error;
-  }
-}
-
-// Function to call Ollama API for image analysis
-async function callOllamaImageAnalysis(imagePath, prompt) {
-  console.log("Calling Ollama API for image analysis with prompt:", prompt);
-
-  const ollamaUrl = "http://192.168.1.235:11434"; // Ollama API endpoint
-  const model = "llama3.2-vision"; // Use Llama 3.2-Vision model for image analysis
+  const model = "llama3.2-vision"; // Using Llama 3.2-Vision model for both text and image analysis
 
   try {
-    const response = await axios.post(ollamaUrl, {
-      model: model,
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-          images: [fs.readFileSync(imagePath, { encoding: "base64" })], // Pass the image as base64
-        },
-      ],
-    });
+    const ollama = new Ollama({ host: OLLAMA_URL });
+    let response;
 
-    console.log("Ollama API response:", response.data);
-    return response.data.message.content;
+    // If imageData exists, handle image processing
+    if (imageData) {
+      const imagePath = path.join(dir, `image_${Date.now()}.jpg`);
+      fs.writeFileSync(imagePath, Buffer.from(imageData, "base64")); // Save the image to the server
+
+      response = await ollama.chat({
+        model: model,
+        messages: [
+          {
+            role: "user",
+            content: userMessage || "What is in this image?",
+            images: [fs.readFileSync(imagePath, { encoding: "base64" })], // Pass the image as base64
+          },
+        ],
+      });
+
+      fs.unlinkSync(imagePath); // Clean up the uploaded file
+    } else {
+      // If no image data, process it as a text message
+      response = await ollama.chat({
+        model: model,
+        messages: [
+          { role: "system", content: "You are a helpful assistant." },
+          { role: "user", content: userMessage },
+        ],
+      });
+    }
+
+    console.log("Ollama API response:", response);
+    return response.message?.content || "No response content";
   } catch (error) {
-    console.error(
-      "Error calling Ollama API:",
-      error.response?.data || error.message
-    );
+    console.error("Error calling Ollama API:", error.message || error);
     throw error;
   }
 }
