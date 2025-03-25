@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:web_socket_channel/web_socket_channel.dart'; // Updated import for WebSocketChannel
+import 'package:web_socket_channel/web_socket_channel.dart';
 import 'dart:convert';
-import 'package:flutter/foundation.dart'; // Import for kIsWeb
+import 'package:image_picker/image_picker.dart';
+import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:typed_data';
+import 'config.dart';
 
 void main() {
   runApp(MyApp());
@@ -11,7 +15,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
+      debugShowCheckedModeBanner: true,
       theme: ThemeData(primarySwatch: Colors.blue),
       home: ChatScreen(),
     );
@@ -25,8 +29,11 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _controller = TextEditingController();
-  final List<Map<String, String>> _messages = [];
+  final List<Map<String, dynamic>> _messages = [];
   late WebSocketChannel _channel;
+  XFile? _imageFile;
+  Uint8List? _imageBytes;
+  final ImagePicker _picker = ImagePicker();
 
   @override
   void initState() {
@@ -35,13 +42,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _connectToWebSocket() {
-    // WebSocket connection URL
-    final wsUrl = Uri.parse('ws://localhost:3000');
-
-    // Connect using WebSocketChannel
+    final wsUrl = Uri.parse(Config.wsUrl);
     _channel = WebSocketChannel.connect(wsUrl);
 
-    // Once connected, send the authorization message
     _channel.stream.listen(
       (message) {
         final data = jsonDecode(message);
@@ -76,22 +79,109 @@ class _ChatScreenState extends State<ChatScreen> {
       },
     );
 
-    // Send the API key as an 'auth' message
-    final apiKey = 'loser_use_typescript12345'; // Replace with your API key
-    _channel.sink.add(jsonEncode({'type': 'auth', 'authorization': apiKey}));
+    // final apiKey = 'loser_use_typescript12345';
+    _channel.sink.add(
+      jsonEncode({'type': 'auth', 'authorization': Config.apiKey}),
+    );
   }
 
-  void _sendMessage() {
+  Future<void> _pickImage() async {
+    try {
+      final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
+      if (image != null) {
+        final bytes = await image.readAsBytes();
+        setState(() {
+          _imageFile = image;
+          _imageBytes = bytes;
+        });
+      }
+    } catch (e) {
+      print('Error picking image: $e');
+    }
+  }
+
+  void _removeImage() {
+    setState(() {
+      _imageFile = null;
+      _imageBytes = null;
+    });
+  }
+
+  void _sendMessage() async {
     final message = _controller.text.trim();
-    if (message.isEmpty) return;
+    if (message.isEmpty && _imageBytes == null) return;
 
     setState(() {
-      _messages.add({'role': 'user', 'text': message});
+      if (message.isNotEmpty) {
+        _messages.add({'role': 'user', 'text': message});
+      }
+      if (_imageBytes != null) {
+        _messages.add({
+          'role': 'user',
+          'image': _imageBytes,
+          'text': message.isNotEmpty ? message : 'Analyze this image',
+        });
+      }
       _controller.clear();
     });
 
-    // Send text message to the backend via WebSocket
-    _channel.sink.add(jsonEncode({'type': 'text', 'text': message}));
+    if (_imageBytes != null) {
+      final base64Image = base64Encode(_imageBytes!);
+      _channel.sink.add(
+        jsonEncode({
+          'type': 'image',
+          'text': message.isNotEmpty ? message : 'Analyze this image',
+          'image': base64Image,
+        }),
+      );
+      _removeImage();
+    } else {
+      _channel.sink.add(jsonEncode({'type': 'text', 'text': message}));
+    }
+  }
+
+  Widget _buildImageWidget(dynamic imageData) {
+    if (imageData == null) return SizedBox();
+
+    if (kIsWeb) {
+      return Image.memory(
+        imageData as Uint8List,
+        height: 200,
+        width: 200,
+        fit: BoxFit.cover,
+      );
+    } else {
+      return Image.file(
+        File(imageData as String),
+        height: 200,
+        width: 200,
+        fit: BoxFit.cover,
+      );
+    }
+  }
+
+  Widget _buildImagePreview() {
+    if (_imageBytes == null) return SizedBox();
+
+    return Stack(
+      alignment: Alignment.topRight,
+      children: [
+        Container(
+          height: 100,
+          width: 100,
+          margin: EdgeInsets.only(bottom: 8),
+          decoration: BoxDecoration(borderRadius: BorderRadius.circular(10)),
+          child:
+              kIsWeb
+                  ? Image.memory(_imageBytes!, fit: BoxFit.cover)
+                  : Image.file(File(_imageFile!.path), fit: BoxFit.cover),
+        ),
+        IconButton(
+          icon: Icon(Icons.close, color: Colors.red),
+          onPressed: _removeImage,
+        ),
+      ],
+    );
   }
 
   @override
@@ -103,7 +193,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Yuppie AI Chat App'), centerTitle: true),
+      appBar: AppBar(title: Text('Yuppie AI'), centerTitle: true),
       body: Column(
         children: [
           Expanded(
@@ -114,31 +204,51 @@ class _ChatScreenState extends State<ChatScreen> {
                 final message = _messages[index];
                 final isUser = message['role'] == 'user';
 
-                return Align(
-                  alignment:
-                      isUser ? Alignment.centerRight : Alignment.centerLeft,
-                  child: Container(
-                    margin: EdgeInsets.symmetric(vertical: 5),
-                    padding: EdgeInsets.symmetric(horizontal: 15, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: isUser ? Colors.blue : Colors.grey[300],
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      message['text']!,
-                      style: TextStyle(
-                        color: isUser ? Colors.white : Colors.black,
+                return Column(
+                  crossAxisAlignment:
+                      isUser
+                          ? CrossAxisAlignment.end
+                          : CrossAxisAlignment.start,
+                  children: [
+                    if (message['image'] != null)
+                      Padding(
+                        padding: EdgeInsets.symmetric(vertical: 5),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: _buildImageWidget(message['image']),
+                        ),
+                      ),
+                    Container(
+                      margin: EdgeInsets.symmetric(vertical: 5),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 15,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isUser ? Colors.blue : Colors.grey[300],
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        message['text'] ?? '',
+                        style: TextStyle(
+                          color: isUser ? Colors.white : Colors.black,
+                        ),
                       ),
                     ),
-                  ),
+                  ],
                 );
               },
             ),
           ),
+          _buildImagePreview(),
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: Row(
               children: [
+                IconButton(
+                  icon: Icon(Icons.attach_file, color: Colors.blue),
+                  onPressed: _pickImage,
+                ),
                 Expanded(
                   child: TextField(
                     controller: _controller,
@@ -149,6 +259,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                       contentPadding: EdgeInsets.symmetric(horizontal: 15),
                     ),
+                    onSubmitted: (_) => _sendMessage(),
                   ),
                 ),
                 SizedBox(width: 10),
