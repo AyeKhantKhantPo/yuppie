@@ -6,12 +6,15 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'dart:typed_data';
 import 'config.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 
 void main() {
   runApp(MyApp());
 }
 
 class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -228,10 +231,14 @@ class _ChatScreenState extends State<ChatScreen> {
                         color: isUser ? Colors.blue : Colors.grey[300],
                         borderRadius: BorderRadius.circular(20),
                       ),
-                      child: Text(
-                        message['text'] ?? '',
-                        style: TextStyle(
-                          color: isUser ? Colors.white : Colors.black,
+                      child: MarkdownBody(
+                        // <-- This is the changed part
+                        data: message['text'] ?? '',
+                        styleSheet: MarkdownStyleSheet(
+                          p: TextStyle(
+                            color: isUser ? Colors.white : Colors.black,
+                            fontSize: 16,
+                          ),
                         ),
                       ),
                     ),
