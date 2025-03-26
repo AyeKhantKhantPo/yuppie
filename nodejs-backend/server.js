@@ -1,3 +1,5 @@
+require("dotenv").config(); // Load environment variables
+
 const express = require("express");
 const WebSocket = require("ws");
 const cors = require("cors");
@@ -6,8 +8,20 @@ const path = require("path");
 const fs = require("fs");
 const { Ollama } = require("ollama");
 
+// Validate required environment variables
+const requiredEnvVars = ["API_KEY", "OLLAMA_URL"];
+requiredEnvVars.forEach((varName) => {
+  if (!process.env[varName]) {
+    console.error(`Missing required environment variable: ${varName}`);
+    process.exit(1);
+  }
+});
+
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
+const API_KEY = process.env.API_KEY;
+const OLLAMA_URL = process.env.OLLAMA_URL;
+const dir = process.env.UPLOAD_DIR || "./uploads";
 
 // Enable CORS
 app.use(cors());
@@ -15,37 +29,24 @@ app.use(cors());
 // Set up storage for uploaded files using Multer
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, "uploads/");
+    cb(null, dir);
   },
   filename: function (req, file, cb) {
-    cb(null, Date.now() + path.extname(file.originalname)); // Unique filename
+    cb(null, Date.now() + path.extname(file.originalname));
   },
 });
 
 const upload = multer({ storage: storage });
 
-// Create 'uploads' directory if it doesn't exist
-const dir = "./uploads";
+// Create uploads directory if it doesn't exist
 if (!fs.existsSync(dir)) {
   fs.mkdirSync(dir);
 }
 
-// Hardcoded API key
-const API_KEY = "loser_use_typescript12345"; // API key
-
-// Ollama API URL
-const OLLAMA_URL = "http://192.168.1.235:11434"; // Directly set the Ollama URL here
-
 // Function to check API key
 function check_api_key(authorization) {
   if (!authorization) return false;
-
-  // Check if the authorization matches the hardcoded API key
-  if (authorization === API_KEY || authorization === `Bearer ${API_KEY}`) {
-    return true;
-  }
-
-  return false; // Return false if the API key is invalid
+  return authorization === API_KEY || authorization === `Bearer ${API_KEY}`;
 }
 
 // Create HTTP server
@@ -58,24 +59,19 @@ const wss = new WebSocket.Server({ server });
 
 wss.on("connection", (ws, req) => {
   console.log("Client connected");
-
-  // Log the WebSocket request headers for debugging
   console.log("WebSocket request headers:", req.headers);
 
   let isAuthorized = false;
 
-  // Listen for the first message (which should contain the API key)
   ws.once("message", (message) => {
     const data = JSON.parse(message);
 
-    if (data.type === "auth" && data.authorization === API_KEY) {
+    if (data.type === "auth" && check_api_key(data.authorization)) {
       console.log("Client authorized with API key.");
       isAuthorized = true;
 
-      // If authorized, set up the message handler for further messages
       ws.on("message", async (message) => {
         console.log("Received message:", message);
-
         const data = JSON.parse(message);
         console.log("Parsed message data:", data);
 
@@ -83,14 +79,11 @@ wss.on("connection", (ws, req) => {
           console.log("Handling message of type:", data.type);
 
           try {
-            // Use the model "llama3.2-vision" for both text and image analysis
             const aiResponse = await callOllamaModel(
               data.text || "",
               data.image
             );
             console.log("Sending AI response to client:", aiResponse);
-
-            // Stream the AI response back to the client
             ws.send(JSON.stringify({ type: "text", text: aiResponse }));
           } catch (error) {
             console.error("Error calling Ollama API:", error);
@@ -110,28 +103,23 @@ wss.on("connection", (ws, req) => {
     }
   });
 
-  ws.on("close", () => {
-    console.log("Client disconnected");
-  });
+  ws.on("close", () => console.log("Client disconnected"));
 });
 
-// Function to call Ollama API with the "llama3.2-vision" model
 async function callOllamaModel(userMessage = "", imageData = "") {
   console.log(
     "Calling Ollama API for model processing with message:",
     userMessage
   );
 
-  const model = "llama3.2-vision"; // Using Llama 3.2-Vision model for both text and image analysis
+  const model = "llama3.2-vision";
+  const ollama = new Ollama({ host: OLLAMA_URL });
 
   try {
-    const ollama = new Ollama({ host: OLLAMA_URL });
     let response;
-
-    // If imageData exists, handle image processing
     if (imageData) {
       const imagePath = path.join(dir, `image_${Date.now()}.jpg`);
-      fs.writeFileSync(imagePath, Buffer.from(imageData, "base64")); // Save the image to the server
+      fs.writeFileSync(imagePath, Buffer.from(imageData, "base64"));
 
       response = await ollama.chat({
         model: model,
@@ -139,14 +127,13 @@ async function callOllamaModel(userMessage = "", imageData = "") {
           {
             role: "user",
             content: userMessage || "What is in this image?",
-            images: [fs.readFileSync(imagePath, { encoding: "base64" })], // Pass the image as base64
+            images: [fs.readFileSync(imagePath, { encoding: "base64" })],
           },
         ],
       });
 
-      fs.unlinkSync(imagePath); // Clean up the uploaded file
+      fs.unlinkSync(imagePath);
     } else {
-      // If no image data, process it as a text message
       response = await ollama.chat({
         model: model,
         messages: [
